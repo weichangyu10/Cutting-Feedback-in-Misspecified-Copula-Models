@@ -1,0 +1,235 @@
+---
+title: "Implementation of Cut I Posterior for Macroeconomic dataset"
+author: "CutPosteriorAuthors"
+date: "2024-05-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load required libraries
+```{r}
+library(sn)
+library(mvtnorm)
+library(pracma)
+library(linpk)
+library(Rcpp)
+library(RcppArmadillo)
+library(Matrix)
+library(sm)
+library(ks)
+```
+
+Load customised functions for analysis
+```{r}
+sourceCpp("NewUSMacroSupportFile.cpp")
+source("NewUSMacroSupportFile.R")
+```
+
+Read dataset
+```{r}
+dat <- read.csv("macro2022Q3.csv",header=TRUE)
+y1 <- dat$GDP.Growth
+y2 <- dat$Inflation
+y3 <- dat$IR
+y4 <- dat$UR
+y1 <- y1[1:274]; y2 <- y2[1:274]; y3 <- y3[1:274]; y4 <- y4[1:274]
+```
+
+Read initial guess for marginal parameters
+```{r}
+MarginalPar <- scan("TrialMarginal.txt")
+u1 <- pst(x = y1,xi = MarginalPar[1], omega = exp(MarginalPar[2]), alpha = MarginalPar[3], nu = exp(MarginalPar[4]))
+u2 <- pst(x = y2,xi = MarginalPar[5], omega = exp(MarginalPar[6]), alpha = MarginalPar[7], nu = exp(MarginalPar[8]))
+u3 <- (pst(x = y3,xi = MarginalPar[9], omega = exp(MarginalPar[10]), alpha = MarginalPar[11], nu = exp(MarginalPar[12])) - pst(x = 0, xi = MarginalPar[9], omega = exp(MarginalPar[10]), alpha = MarginalPar[11], nu = exp(MarginalPar[12]))) /(1 - pst(x = 0, xi = MarginalPar[9], omega = exp(MarginalPar[10]), alpha = MarginalPar[11], nu = exp(MarginalPar[12])))
+u4 <- (pst(x = y4,xi = MarginalPar[13], omega = exp(MarginalPar[14]), alpha = MarginalPar[15], nu = exp(MarginalPar[16])) - pst(x = 0, xi = MarginalPar[13], omega = exp(MarginalPar[14]), alpha = MarginalPar[15], nu = exp(MarginalPar[16]))) /(1 - pst(x = 0, xi = MarginalPar[13], omega = exp(MarginalPar[14]), alpha = MarginalPar[15], nu = exp(MarginalPar[16])))
+```
+
+Use entire dataset to compute MLE for model parmaeters
+```{r}
+UMAT <- cbind(u1,u2,u3,u4)
+OmegaArray.initial <- array(0,dim=c(4,4,5))
+OmegaArray.initial[,,1] <- cor(qnorm(UMAT))
+for(i in 1:4){
+  for(j in 1:4){
+    
+    OmegaArray.initial[i,j,2] <- cor(qnorm(UMAT[1:(nrow(UMAT)-1),i]),qnorm(UMAT[2:(nrow(UMAT)),j]))
+    
+  }
+}
+for(i in 1:4){
+  for(j in 1:4){
+    
+    OmegaArray.initial[i,j,3] <- cor(qnorm(UMAT[1:(nrow(UMAT)-2),i]),qnorm(UMAT[3:(nrow(UMAT)),j]))
+    
+  }
+}
+for(i in 1:4){
+  for(j in 1:4){
+    
+    OmegaArray.initial[i,j,4] <- cor(qnorm(UMAT[1:(nrow(UMAT)-3),i]),qnorm(UMAT[4:(nrow(UMAT)),j]))
+    
+  }
+}
+for(i in 1:4){
+  for(j in 1:4){
+    
+    OmegaArray.initial[i,j,5] <- cor(qnorm(UMAT[1:(nrow(UMAT)-4),i]),qnorm(UMAT[5:(nrow(UMAT)),j]))
+    
+  }
+}
+
+BigT <- 4*length(y1)
+m <- ncol(UMAT)
+BigOmega <- matrix(0,nrow=BigT,ncol=BigT)
+for(s in 1:5){
+  for(t in max(1,s-4):min(s+4,nrow(UMAT))){
+    
+    a.t <- (t-1)*m+1
+    b.t <- m*t
+    a.s <- (s-1)*m+1
+    b.s <- s*m
+    
+    if(s<t){
+      
+      BigOmega[a.s:b.s,a.t:b.t] <- OmegaArray.initial[,,abs(t-s)+1]
+      
+    }
+    if(s>t){
+      
+      BigOmega[a.s:b.s,a.t:b.t] <- t(OmegaArray.initial[,,abs(t-s)+1])
+      
+    }
+    if(s==t){
+      
+      BigOmega[a.s:b.s,a.t:b.t] <- OmegaArray.initial[,,1]
+      
+    }
+  }
+}
+BigOmega2 <- BigOmega[1:20,1:20]
+PhiBlock <- ConvertSemiPartialCorCpp(BigOmega2) 
+Phi0 <- PhiBlock[1:4,1:4]
+Phi1 <- PhiBlock[5:8,1:4]
+Phi2 <- PhiBlock[9:12,1:4]
+Phi3 <- PhiBlock[13:16,1:4]
+Phi4 <- PhiBlock[17:20,1:4]
+PhiArray.MLE <- array(0, dim=c(4,4,5))
+PhiArray.MLE[,,1] <- Phi0
+PhiArray.MLE[,,2] <- Phi1
+PhiArray.MLE[,,3] <- Phi2
+PhiArray.MLE[,,4] <- Phi3
+PhiArray.MLE[,,5] <- Phi4
+expandedPhi <- qnorm(0.5*(c(PhiArray.MLE[2:4,1,1],PhiArray.MLE[3:4,2,1], PhiArray.MLE[4,3,1], PhiArray.MLE[,,2:5])+1))
+```
+
+Compute Cut I posteriors of marginal parameters (based on entire dataset)
+```{r}
+VBmarginal1.obj <- NewVB.cut.ST.USMacro(y = y1, mu.init = MarginalPar[1:4], C.init = diag(0.1,4), maxRuns = 20000)
+VBmarginal2.obj <- NewVB.cut.ST.USMacro(y = y2, mu.init = MarginalPar[5:8], C.init = diag(0.1,4), maxRuns = 20000)
+VBmarginal3.obj <- NewVB.cut.TruncST.USMacro(y = y3, mu.init = MarginalPar[9:12], C.init = diag(0.1,4), maxRuns = 20000)
+VBmarginal4.obj <- NewVB.cut.TruncST.USMacro(y = y4, mu.init = MarginalPar[13:16], C.init = diag(0.1,4), maxRuns = 20000)
+
+
+C.init.margin <- as.matrix(bdiag(VBmarginal1.obj$Cstore[,,20000], VBmarginal2.obj$Cstore[,,20000], VBmarginal3.obj$Cstore[,,20000], VBmarginal4.obj$Cstore[,,20000]))
+margin1.est <- c(VBmarginal1.obj$mustore[20000,1], exp(VBmarginal1.obj$mustore[20000,2] + 0.5*VBmarginal1.obj$Cstore[2,2,20000]^2), VBmarginal1.obj$mustore[20000,3],  exp(VBmarginal1.obj$mustore[20000,4] + 0.5*VBmarginal1.obj$Cstore[4,4,20000]^2))
+margin2.est <- c(VBmarginal2.obj$mustore[20000,1], exp(VBmarginal2.obj$mustore[20000,2] + 0.5*VBmarginal2.obj$Cstore[2,2,20000]^2), VBmarginal2.obj$mustore[20000,3],  exp(VBmarginal2.obj$mustore[20000,4] + 0.5*VBmarginal2.obj$Cstore[4,4,20000]^2))
+margin3.est <- c(VBmarginal3.obj$mustore[20000,1], exp(VBmarginal3.obj$mustore[20000,2] + 0.5*VBmarginal3.obj$Cstore[2,2,20000]^2), VBmarginal3.obj$mustore[20000,3],  exp(VBmarginal3.obj$mustore[20000,4] + 0.5*VBmarginal3.obj$Cstore[4,4,20000]^2))
+margin4.est <- c(VBmarginal4.obj$mustore[20000,1], exp(VBmarginal4.obj$mustore[20000,2] + 0.5*VBmarginal4.obj$Cstore[2,2,20000]^2), VBmarginal4.obj$mustore[20000,3],  exp(VBmarginal4.obj$mustore[20000,4] + 0.5*VBmarginal4.obj$Cstore[4,4,20000]^2))
+```
+
+Compute the U's based on moments of Cut I posteriors
+```{r}
+u1.margin <- pst(y1, xi = margin1.est[1], omega = margin1.est[2], alpha = margin1.est[3], nu = margin1.est[4])
+u2.margin <- pst(y2, xi = margin2.est[1], omega = margin2.est[2], alpha = margin2.est[3], nu = margin2.est[4])
+u3.margin <- (pst(y3, xi = margin3.est[1], omega = margin3.est[2], alpha = margin3.est[3], nu = margin3.est[4]) - pst(0, xi = margin3.est[1], omega = margin3.est[2], alpha = margin3.est[3], nu = margin3.est[4]))/(1 - pst(0, xi = margin3.est[1], omega = margin3.est[2], alpha = margin3.est[3], nu = margin3.est[4]))
+u4.margin <- (pst(y4, xi = margin4.est[1], omega = margin4.est[2], alpha = margin4.est[3], nu = margin4.est[4]) - pst(0, xi = margin4.est[1], omega = margin4.est[2], alpha = margin4.est[3], nu = margin4.est[4]))/(1 - pst(0, xi = margin4.est[1], omega = margin4.est[2], alpha = margin4.est[3], nu = margin4.est[4]))
+```
+
+Compute Cut I posteriors of copula parameters (based on entire dataset)
+```{r}
+OptimTry <- optim(par = c(expandedPhi,rep(-2,5)), fn = NewCopulaObjectiveFunctionCut, method = "L-BFGS-B", lower = c(rep(-6,16),rep(-6,16)), upper = c(rep(6,16),rep(4,16)), control = list(fnscale=-1), hessian = TRUE, U1=u1.margin, U2=u2.margin, U3 = u3.margin, U4 = u4.margin )
+V <- diag(c(rep(0,16),sqrt(abs(-diag(solve(OptimTry$hessian))))))
+V[1:16,1:16] <- C.init.margin
+VB.cut.obj <- NewCopulaVBCut(y1 = y1, y2 = y2, y3 = y3, y4 = y4, mu.init = c(VBmarginal1.obj$mustore[20000,],VBmarginal2.obj$mustore[20000,],VBmarginal3.obj$mustore[20000,], VBmarginal4.obj$mustore[20000,],OptimTry$par), C.init = V, maxRuns = 5000)
+```
+
+VB Cut I Posterior mean and covariance matrix (based on entire dataset)
+```{r}
+VBcov.cut1 <- VB.cut.obj$CArray[,,5000] %*% t(VB.cut.obj$CArray[,,5000]) 
+VBmean.cut1 <- VB.cut.obj$muMAT[5000,]
+```
+
+Compute 4-step forward log-score metric
+```{r}
+MarginalDrawsKernelEst <- matrix(0,nrow=32,ncol=183)
+for(tprime in 84:266){
+  
+  VBmarginal1.obj.temp <- NewVB.cut.ST.USMacro(y = y1[1:tprime], mu.init = VBmarginal1.obj$mustore[20000,], C.init = VBmarginal1.obj$Cstore[,,20000], maxRuns = 5000)
+  VBmarginal2.obj.temp <- NewVB.cut.ST.USMacro(y = y2[1:tprime], mu.init = VBmarginal2.obj$mustore[20000,], C.init = VBmarginal2.obj$Cstore[,,20000], maxRuns = 5000)
+  VBmarginal3.obj.temp <- NewVB.cut.TruncST.USMacro(y = y3[1:tprime], mu.init = VBmarginal3.obj$mustore[20000,], C.init = VBmarginal3.obj$Cstore[,,20000], maxRuns = 8000)
+  VBmarginal4.obj.temp <- NewVB.cut.TruncST.USMacro(y = y4[1:tprime], mu.init = VBmarginal4.obj$mustore[20000,], C.init = VBmarginal4.obj$Cstore[,,20000], maxRuns = 8000)
+  V.temp <- diag(0,91)
+  C.init.margin.temp <- as.matrix(bdiag(VBmarginal1.obj.temp$Cstore[,,5000], VBmarginal2.obj.temp$Cstore[,,5000], VBmarginal3.obj.temp$Cstore[,,8000], VBmarginal4.obj.temp$Cstore[,,8000]))
+  V.temp[1:16,1:16] <- C.init.margin.temp
+  V.temp[17:91,17:91] <- VB.cut.obj$CArray[17:91,17:91,5000]
+  VB.cut.obj.temp <- NewCopulaVBCut(y1 = y1[1:tprime], y2 = y2[1:tprime], y3 = y3[1:tprime], y4 = y4[1:tprime], mu.init = c(VBmarginal1.obj.temp$mustore[5000,],VBmarginal2.obj.temp$mustore[5000,],VBmarginal3.obj.temp$mustore[8000,], VBmarginal4.obj.temp$mustore[8000,],VB.cut.obj$muMAT[5000,17:91]), C.init = V.temp, maxRuns = 5000)
+  u1.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
+  u2.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
+  u3.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
+  u4.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
+  ParDraws.temp <- rmvnorm(5000,mean = VB.cut.obj.temp$muMAT[5000,], sigma = (VB.cut.obj.temp$CArray[,,5000] %*% t(VB.cut.obj.temp$CArray[,,5000]) ) )
+  Whistory.All.MAT <- matrix(0,nrow=5000,ncol=(4*(tprime+8)))
+  for(l in 1:5000){
+    
+    u1.draw.MAT[,l] <- pst(y1[1:(tprime+8)], xi = ParDraws.temp[l,1], omega = exp(ParDraws.temp[l,2]), alpha = ParDraws.temp[l,3], nu = exp(ParDraws.temp[l,4]))
+    u2.draw.MAT[,l] <- pst(y2[1:(tprime+8)], xi = ParDraws.temp[l,5], omega = exp(ParDraws.temp[l,6]), alpha = ParDraws.temp[l,7], nu = exp(ParDraws.temp[l,8]))
+    u3.draw.MAT[,l] <- (pst(y3[1:(tprime+8)], xi = ParDraws.temp[l,9], omega = exp(ParDraws.temp[l,10]), alpha = ParDraws.temp[l,11], nu = exp(ParDraws.temp[l,12])) - pst(0, xi = ParDraws.temp[l,9], omega = exp(ParDraws.temp[l,10]), alpha = ParDraws.temp[l,11], nu = exp(ParDraws.temp[l,12])))/(1 - pst(0, xi = ParDraws.temp[l,9], omega = exp(ParDraws.temp[l,10]), alpha = ParDraws.temp[l,11], nu = exp(ParDraws.temp[l,12])))
+    u4.draw.MAT[,l] <- (pst(y4[1:(tprime+8)], xi = ParDraws.temp[l,13], omega = exp(ParDraws.temp[l,14]), alpha = ParDraws.temp[l,15], nu = exp(ParDraws.temp[l,16])) - pst(0, xi = ParDraws.temp[l,13], omega = exp(ParDraws.temp[l,14]), alpha = ParDraws.temp[l,15], nu = exp(ParDraws.temp[l,16])))/(1 - pst(0, xi = ParDraws.temp[l,13], omega = exp(ParDraws.temp[l,14]), alpha = ParDraws.temp[l,15], nu = exp(ParDraws.temp[l,16])))
+    Whistory.All.MAT[l,] <- c(rbind(rev(u1.draw.MAT[,l]),rev(u2.draw.MAT[,l]),rev(u3.draw.MAT[,l]), rev(u4.draw.MAT[,l]) ))
+    
+  }
+  Whistory.All.MAT <- qnorm(Whistory.All.MAT)
+  DrawsMAT <- pnorm(PredictiveDrawRun(ParDraws = ParDraws.temp[,17:86], WhistoryMAT = Whistory.All.MAT))
+  MarginalDraws <- matrix(0,nrow=32,ncol=5000)
+  DrawsMAT <- pmax(pmin(DrawsMAT,matrix(0.98,nrow=32,ncol=5000)), matrix(0.02,nrow=32,ncol=5000))
+  for(l in 1:5000){
+    
+    MarginalDraws[seq(1,32,4),l] <- qst(DrawsMAT[seq(1,32,4),l], xi = ParDraws.temp[l,1], omega =  exp(ParDraws.temp[l,2]), alpha = ParDraws.temp[l,3] , nu = exp(ParDraws.temp[l,4]) )
+    MarginalDraws[seq(2,32,4),l] <- qst(DrawsMAT[seq(2,32,4),l], xi = ParDraws.temp[l,5], omega =  exp(ParDraws.temp[l,6]), alpha = ParDraws.temp[l,7] , nu = exp(ParDraws.temp[l,8]) )
+    F03.temp <- pst(0, xi = ParDraws.temp[l,9], omega =  exp(ParDraws.temp[l,10]), alpha = ParDraws.temp[l,11], nu = exp(ParDraws.temp[l,12]) )
+    Draw3 <- (DrawsMAT[seq(3,32,4),l]*(1-F03.temp)+F03.temp)
+    Draw3 <- pmax(pmin(Draw3,rep(0.95,8)),rep(0.05,8))
+    MarginalDraws[seq(3,32,4),l] <- qst(Draw3, xi = ParDraws.temp[l,9], omega =  exp(ParDraws.temp[l,10]), alpha = ParDraws.temp[l,11], nu = exp(ParDraws.temp[l,12]) )
+    F04.temp <- pst(0, xi = ParDraws.temp[l,13], omega =  exp(ParDraws.temp[l,14]), alpha = ParDraws.temp[l,15], nu = exp(ParDraws.temp[l,16]) )
+    Draw4 <- (DrawsMAT[seq(4,32,4),l]*(1-F04.temp)+F04.temp)
+    Draw4 <- pmax(pmin(Draw4,rep(0.95,8)),rep(0.05,8))
+    MarginalDraws[seq(4,32,4),l] <- qst(Draw4, xi = ParDraws.temp[l,13], omega =  exp(ParDraws.temp[l,14]), alpha = ParDraws.temp[l,15], nu = exp(ParDraws.temp[l,16]) )
+    
+  }
+  for(j in seq(1,32,4)){
+    
+    MarginalDrawsKernelEst[j,(tprime-83)]  <- log(sm.density(x=MarginalDraws[j,], eval.points=c(y1[tprime+ceiling(j/4)]), display="none")$estimate)
+    
+  }
+  for(j in seq(2,32,4)){
+    
+    MarginalDrawsKernelEst[j,(tprime-83)]  <- log(sm.density(x=MarginalDraws[j,], eval.points=c(y2[tprime+ceiling(j/4)]), display="none")$estimate)
+    
+  }
+  for(j in seq(3,32,4)){
+    
+    MarginalDrawsKernelEst[j,(tprime-83)]  <- log(sm.density(x=MarginalDraws[j,], eval.points=c(y3[tprime+ceiling(j/4)]), display="none")$estimate)
+    
+  }
+  for(j in seq(4,32,4)){
+    
+    MarginalDrawsKernelEst[j,(tprime-83)]  <- log(sm.density(x=MarginalDraws[j,], eval.points=c(y4[tprime+ceiling(j/4)]), display="none")$estimate)
+    
+  }
+  
+  
+}
+```
