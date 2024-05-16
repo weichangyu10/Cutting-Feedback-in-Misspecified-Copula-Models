@@ -1,1 +1,1 @@
-# Cutting-Feedback-in-Misspecified-Copula-Models
+# Supporting Codes for Cutting Feedback in Misspecified Copula Models
