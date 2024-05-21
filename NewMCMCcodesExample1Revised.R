@@ -190,7 +190,7 @@ NewMCMCcutMarginal.LogNormal <- function(y, mu.init, v.init, B=10000){
 }
 
 #MCMC for correctly specified gamma marginal. Used for Cut I posterior inference.
-#y is a user-input vector for observed Y_1 values.
+#y is a user-input vector for observed Y_2 values.
 #a.init and b.init denote initial values of log-shape and log-rate of gamma marginal.
 #B denotes the number of MCMC draws
 NewMCMCcutMarginal.Gamma <- function(y, a.init, b.init, B=10000){
