@@ -1,0 +1,419 @@
+---
+title: "Example1RunFile"
+author: "CutPosteriorAuthors"
+date: "2024-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load required packages
+```{r}
+library(foreach)
+library(doParallel)
+library(pracma)
+library(copula)
+library(extraDistr)
+library(mvtnorm)
+library(numDeriv)
+library(Matrix)
+```
+
+#Load customised functions
+```{r}
+source("NewMCMCcodesExample1Revised.R")
+source("NewVBcodesExample1Revised.R")
+```
+
+#Select training sample size
+```{r}
+N <- 1000
+#N <- 500
+#N <- 100
+```
+
+#Set true copula density
+```{r}
+d <- 2
+tau.true <- 0.7
+cc <- tCopula(param = sin(0.5*pi*tau.true) ,dim = d, df=1)
+```
+
+#Set true parameter values
+```{r}
+true.val <- c(1,1,7,3,tau.true)
+```
+
+#MCMC inference with correctly specified marginals and copula 
+```{r}
+theta.correct <- matrix(0,nrow=500,ncol=5)
+theta.var.correct <- matrix(0,nrow=500,ncol=5)
+lower.correct <- matrix(0,nrow=500,ncol=5)
+upper.correct <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  MCMCobj.correct <- NewMCMCfull.LogNormal.Gamma.T(y = cbind(y1,y2), mu.init = mean(log(y1)), v.init = var(log(y1)), a.init = log(MLE[1]), b.init = log(MLE[2]), omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000 )
+  theta.correct[seed.num,] <- c(mean(MCMCobj.correct$mu.vec[5001:15000]), mean(exp(MCMCobj.correct$v.vec[5001:15000])), mean(exp(MCMCobj.correct$a.vec[5001:15000])), mean(exp(MCMCobj.correct$b.vec[5001:15000])), mean(MCMCobj.correct$tau.vec[5001:15000]))
+  theta.var.correct[seed.num,] <- c(var(MCMCobj.correct$mu.vec[5001:15000]), var(exp(MCMCobj.correct$v.vec[5001:15000])), var(exp(MCMCobj.correct$a.vec[5001:15000])), var(exp(MCMCobj.correct$b.vec[5001:15000])), var(MCMCobj.correct$tau.vec[5001:15000]))
+  lower.correct[seed.num,] <- c(quantile(MCMCobj.correct$mu.vec[5001:15000], 0.025), quantile(exp(MCMCobj.correct$v.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.correct$a.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.correct$b.vec[5001:15000]), 0.025), quantile(MCMCobj.correct$tau.vec[5001:15000], 0.025))
+  upper.correct[seed.num,] <- c(quantile(MCMCobj.correct$mu.vec[5001:15000], 0.975), quantile(exp(MCMCobj.correct$v.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.correct$a.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.correct$b.vec[5001:15000]), 0.975), quantile(MCMCobj.correct$tau.vec[5001:15000], 0.975))
+  
+  cat("Completed seed number:", seed.num, "\n")
+  
+}
+Bias.correct <- rowMeans(apply(theta.correct,1,function(s){ s- true.val }))
+RMSE.correct <- sqrt(colMeans(t(apply(theta.correct,1,function(s){ (s - true.val)^2 })) ))
+Coverage.correct <- rowMeans(apply(lower.correct,1,function(s){ s <= true.val })*apply(upper.correct,1,function(s){ s >= true.val }))
+KL.marginal1.correct <- 0.5*( (theta.correct[,2]/1) - 1 + (theta.correct[,1] - 1)^2/1 + log(1/theta.correct[,2]) )
+KL.marginal2.correct <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.correct[rs] <- KL.GAMMA(shape1 = theta.correct[rs,3], rate1 = theta.correct[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFTCop(F1 = u1, F2 = u2, tau = theta.correct[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.correct
+RMSE.correct
+Coverage.correct
+c(mean(KL.marginal1.correct),mean(KL.marginal2.correct),mean(KS.cop.vec))
+```
+
+#MCMC inference with correctly specified marginals and misspecified copula
+```{r}
+theta.uncut <- matrix(0,nrow=500,ncol=5)
+theta.var.uncut <- matrix(0,nrow=500,ncol=5)
+lower.uncut <- matrix(0,nrow=500,ncol=5)
+upper.uncut <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  
+  MCMCobj.uncut <- NewMCMCfull.LogNormal.Gamma.Gumbel(y = cbind(y1,y2), mu.init = mean(log(y1)), v.init = var(log(y1)), a.init = log(MLE[1]), b.init = log(MLE[2]), omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000 )
+  theta.uncut[seed.num,] <- c(mean(MCMCobj.uncut$mu.vec[5001:15000]), mean(exp(MCMCobj.uncut$v.vec[5001:15000])), mean(exp(MCMCobj.uncut$a.vec[5001:15000])), mean(exp(MCMCobj.uncut$b.vec[5001:15000])), mean(MCMCobj.uncut$tau.vec[5001:15000]))
+  theta.var.uncut[seed.num,] <- c(var(MCMCobj.uncut$mu.vec[5001:15000]), var(exp(MCMCobj.uncut$v.vec[5001:15000])), var(exp(MCMCobj.uncut$a.vec[5001:15000])), var(exp(MCMCobj.uncut$b.vec[5001:15000])), var(MCMCobj.uncut$tau.vec[5001:15000]))
+  lower.uncut[seed.num,] <- c(quantile(MCMCobj.uncut$mu.vec[5001:15000], 0.025), quantile(exp(MCMCobj.uncut$v.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.uncut$a.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.uncut$b.vec[5001:15000]), 0.025), quantile(MCMCobj.uncut$tau.vec[5001:15000], 0.025))
+  upper.uncut[seed.num,] <- c(quantile(MCMCobj.uncut$mu.vec[5001:15000], 0.975), quantile(exp(MCMCobj.uncut$v.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.uncut$a.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.uncut$b.vec[5001:15000]), 0.975), quantile(MCMCobj.uncut$tau.vec[5001:15000], 0.975))
+  
+}
+Bias.uncut <- rowMeans(apply(theta.uncut,1,function(s){ s- true.val }))
+RMSE.uncut <- sqrt(colMeans(t(apply(theta.uncut,1,function(s){ (s - true.val)^2 })) ))
+Coverage.uncut <- rowMeans(apply(lower.uncut,1,function(s){ s <= true.val })*apply(upper.uncut,1,function(s){ s >= true.val }))
+KL.marginal1.uncut <- 0.5*log(1) - 0.5*log(theta.uncut[,2]) + 0.5*(theta.uncut[,2]/1) + 0.5*(theta.uncut[,1]-1)^2 - 0.5
+KL.marginal2.uncut <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.uncut[rs] <- KL.GAMMA(shape1 = theta.uncut[rs,3], rate1 = theta.uncut[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.uncut[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.uncut
+RMSE.uncut
+Coverage.uncut
+c(mean(KL.marginal1.uncut),mean(KL.marginal2.uncut),mean(KS.cop.vec))
+```
+
+#MCMC Cut I posterior inference with misspecified copula
+```{r}
+theta.cut1 <- matrix(0,nrow=500,ncol=5)
+theta.var.cut1 <- matrix(0,nrow=500,ncol=5)
+lower.cut1 <- matrix(0,nrow=500,ncol=5)
+upper.cut1 <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  MCMCobj.marginal1.cut1 <- NewMCMCcutMarginal.LogNormal(y = y1, mu.init = mean(log(y1)), v.init = var(log(y1)), B = 15000)
+  MCMCobj.marginal2.cut1 <- NewMCMCcutMarginal.Gamma(y = y2, a.init = log(MLE[1]), b.init = log(MLE[2]), B = 15000)
+  # 
+  omega.guess <- max(logit(2/pi*asin(cor(y1,y2))),0.05)
+  cores=detectCores()
+  cl <- makeCluster(cores[1]-1) #not to overload your computer
+  registerDoParallel(cl)
+  storeMATRIX <-  foreach(l=1:10000, .combine=cbind) %dopar% {
+
+    library(copula)
+    library(pracma)
+    library(mvtnorm)
+    MCMCobj.cop.cut1 <- NewMCMCcut1.LogNormal.Gamma.Gumbel(y = cbind(y1,y2), mu.val = MCMCobj.marginal1.cut1$mu.vec[5000+l], v.val = MCMCobj.marginal1.cut1$v.vec[5000+l], a.val = MCMCobj.marginal2.cut1$a.vec[5000+l], b.val = MCMCobj.marginal2.cut1$b.vec[5000+l], omega.init = omega.guess, B = 500)
+    c(MCMCobj.cop.cut1$tau.vec[500])
+
+  }
+   stopCluster(cl)
+  theta.cut1[seed.num,] <- c(mean(MCMCobj.marginal1.cut1$mu.vec[5001:15000]), mean(exp(MCMCobj.marginal1.cut1$v.vec[5001:15000])), mean(exp(MCMCobj.marginal2.cut1$a.vec[5001:15000])), mean(exp(MCMCobj.marginal2.cut1$b.vec[5001:15000])), mean(storeMATRIX[1,]))
+  theta.var.cut1[seed.num,] <- c(var(MCMCobj.marginal1.cut1$mu.vec[5001:15000]), var(exp(MCMCobj.marginal1.cut1$v.vec[5001:15000])), var(exp(MCMCobj.marginal2.cut1$a.vec[5001:15000])), var(exp(MCMCobj.marginal2.cut1$b.vec[5001:15000])), var(storeMATRIX[1,]))
+  lower.cut1[seed.num,] <- c(quantile(MCMCobj.marginal1.cut1$mu.vec[5001:15000],0.025), quantile(exp(MCMCobj.marginal1.cut1$v.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.marginal2.cut1$a.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.marginal2.cut1$b.vec[5001:15000]), 0.025), quantile(storeMATRIX[1,], 0.025))
+  upper.cut1[seed.num,] <- c(quantile(MCMCobj.marginal1.cut1$mu.vec[5001:15000],0.975), quantile(exp(MCMCobj.marginal1.cut1$v.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.marginal2.cut1$a.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.marginal2.cut1$b.vec[5001:15000]), 0.975), quantile(storeMATRIX[1,], 0.975))
+  cat("Completed seed number:", seed.num, "\n")
+    
+}
+Bias.cut1 <- rowMeans(apply(theta.cut1,1,function(s){ s- true.val }))
+RMSE.cut1 <- sqrt(colMeans(t(apply(theta.cut1,1,function(s){ (s - true.val)^2 })) ))
+Coverage.cut1 <- rowMeans(apply(lower.cut1[,],1,function(s){ s <= true.val })*apply(upper.cut1,1,function(s){ s >= true.val }))
+KL.marginal1.cut1 <- 0.5*log(1) - 0.5*log(theta.cut1[,2]) + 0.5*(theta.cut1[,2]/1) + 0.5*(theta.cut1[,1]-1)^2 - 0.5
+KL.marginal2.cut1 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.cut1[rs] <- KL.GAMMA(shape1 = theta.cut1[rs,3], rate1 = theta.cut1[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.cut1[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.cut1
+RMSE.cut1
+Coverage.cut1
+c(mean(KL.marginal1.cut1),mean(KL.marginal2.cut1),mean(KS.cop.vec))
+```
+
+#MCMC Cut I posterior inference with correctly specified copula
+```{r}
+theta.correct.cut1 <- matrix(0,nrow=500,ncol=5)
+theta.var.correct.cut1 <- matrix(0,nrow=500,ncol=5)
+lower.correct.cut1 <- matrix(0,nrow=500,ncol=5)
+upper.correct.cut1 <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  MCMCobj.marginal1.correct.cut1 <- NewMCMCcutMarginal.LogNormal(y = y1, mu.init = mean(log(y1)), v.init = var(log(y1)), B = 15000)
+  MCMCobj.marginal2.correct.cut1 <- NewMCMCcutMarginal.Gamma(y = y2, a.init = log(MLE[1]), b.init = log(MLE[2]), B = 15000)
+  # 
+  omega.guess <- max(logit(2/pi*asin(cor(y1,y2))),0.05)
+  cores=detectCores()
+  cl <- makeCluster(cores[1]-1) #not to overload your computer
+  registerDoParallel(cl)
+  storeMATRIX <-  foreach(l=1:10000, .combine=cbind) %dopar% {
+    
+    library(copula)
+    library(pracma)
+    library(mvtnorm)
+    MCMCobj.cop.correct.cut1 <- NewMCMCcut1.LogNormal.Gamma.T(y = cbind(y1,y2), mu.val = MCMCobj.marginal1.correct.cut1$mu.vec[5000+l], v.val = MCMCobj.marginal1.correct.cut1$v.vec[5000+l], a.val = MCMCobj.marginal2.correct.cut1$a.vec[5000+l], b.val = MCMCobj.marginal2.correct.cut1$b.vec[5000+l], omega.init = omega.guess, B = 500)
+    c(MCMCobj.cop.correct.cut1$tau.vec[500])
+    
+  }
+  stopCluster(cl)
+  theta.correct.cut1[seed.num,] <- c(mean(MCMCobj.marginal1.correct.cut1$mu.vec[5001:15000]), mean(exp(MCMCobj.marginal1.correct.cut1$v.vec[5001:15000])), mean(exp(MCMCobj.marginal2.correct.cut1$a.vec[5001:15000])), mean(exp(MCMCobj.marginal2.correct.cut1$b.vec[5001:15000])), mean(storeMATRIX[1,]))
+  theta.var.correct.cut1[seed.num,] <- c(var(MCMCobj.marginal1.correct.cut1$mu.vec[5001:15000]), var(exp(MCMCobj.marginal1.correct.cut1$v.vec[5001:15000])), var(exp(MCMCobj.marginal2.correct.cut1$a.vec[5001:15000])), var(exp(MCMCobj.marginal2.correct.cut1$b.vec[5001:15000])), var(storeMATRIX[1,]))
+  lower.correct.cut1[seed.num,] <- c(quantile(MCMCobj.marginal1.correct.cut1$mu.vec[5001:15000],0.025), quantile(exp(MCMCobj.marginal1.correct.cut1$v.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.marginal2.correct.cut1$a.vec[5001:15000]), 0.025), quantile(exp(MCMCobj.marginal2.correct.cut1$b.vec[5001:15000]), 0.025), quantile(storeMATRIX[1,], 0.025))
+  upper.correct.cut1[seed.num,] <- c(quantile(MCMCobj.marginal1.correct.cut1$mu.vec[5001:15000],0.975), quantile(exp(MCMCobj.marginal1.correct.cut1$v.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.marginal2.correct.cut1$a.vec[5001:15000]), 0.975), quantile(exp(MCMCobj.marginal2.correct.cut1$b.vec[5001:15000]), 0.975), quantile(storeMATRIX[1,], 0.975))
+  cat("Completed seed number:", seed.num, "\n")
+  
+}
+Bias.correct.cut1 <- rowMeans(apply(theta.correct.cut1,1,function(s){ s- true.val }))
+RMSE.correct.cut1 <- sqrt(colMeans(t(apply(theta.correct.cut1,1,function(s){ (s - true.val)^2 })) ))
+Coverage.correct.cut1 <- rowMeans(apply(lower.correct.cut1,1,function(s){ s <= true.val })*apply(upper.correct.cut1,1,function(s){ s >= true.val }))
+KL.marginal1.correct.cut1 <- 0.5*log(1) - 0.5*log(theta.correct.cut1[,2]) + 0.5*(theta.correct.cut1[,2]/1) + 0.5*(theta.correct.cut1[,1]-1)^2 - 0.5
+KL.marginal2.correct.cut1 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.correct.cut1[rs] <- KL.GAMMA(shape1 = theta.correct.cut1[rs,3], rate1 = theta.correct.cut1[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFTCop(F1 = u1, F2 = u2, tau = theta.correct.cut1[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.correct.cut1
+RMSE.correct.cut1
+Coverage.correct.cut1
+c(mean(KL.marginal2.correct.cut1),mean(KL.marginal2.correct.cut1),mean(KS.cop.vec))
+```
+
+#VB inference with correctly specified marginals and misspecified copula
+```{r}
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  VBobj.uncut <- VB.LogNormal.Gamma.Gumbel.uncut(y = cbind(y1,y2), m.init = c(mean(log(y1)), log(var(log(y1))), log(MLE[1]), log(MLE[2]), max(logit(2/pi*asin(cor(y1,y2))),0.05) ), C.init = diag(0.02,5))
+  VBMainUncutMean <- colMeans(VBobj.uncut$mstore[5001:10000,])
+  VBMainUncutVCov <- matrix(0,nrow=5,ncol=5)
+  for(b in 5001:10000){
+    
+    VBMainUncutVCov <- VBMainUncutVCov + VBobj.uncut$Cstore[,,b] %*% t(VBobj.uncut$Cstore[,,b])
+    
+  }
+  VBMainUncutVCov <- VBMainUncutVCov/5000
+  theta.VB.uncut[seed.num,1] <- VBMainUncutMean[1]
+  theta.VB.uncut[seed.num,2:4] <- exp(VBMainUncutMean[2:4] + 0.5*(diag(VBMainUncutVCov))[2:4])
+  omega.post.draws <- rnorm(100000,mean=VBMainUncutMean[5],sd=sqrt(VBMainUncutVCov[5,5]))
+  tau.post.draws <- exp(log(exp(exp(omega.post.draws)) - 1) - log(exp(exp(omega.post.draws)) + 1))
+  theta.VB.uncut[seed.num,5] <- mean(tau.post.draws)
+  theta.var.VB.uncut[seed.num,1] <- (diag(VBMainUncutVCov))[1]
+  theta.var.VB.uncut[seed.num,2:4] <- (exp((diag(VBMainUncutVCov))[2:4])-1)*exp(2* VBMainUncutMean[2:4] + (diag(VBMainUncutVCov))[2:4])
+  theta.var.VB.uncut[seed.num,5] <- var(tau.post.draws)
+  lower.VB.uncut[seed.num,1] <- qnorm(0.025,mean = VBMainUncutMean[1], sd = sqrt((diag(VBMainUncutVCov))[1]) )
+  lower.VB.uncut[seed.num,2:4] <- qlnorm(0.025,meanlog = VBMainUncutMean[2:4], sdlog = sqrt((diag(VBMainUncutVCov))[2:4]))
+  lower.VB.uncut[seed.num,5] <- quantile(tau.post.draws,0.025)
+  upper.VB.uncut[seed.num,1] <- qnorm(0.975,mean = VBMainUncutMean[1], sd = sqrt((diag(VBMainUncutVCov))[1]) )
+  upper.VB.uncut[seed.num,2:4] <- qlnorm(0.975,meanlog = VBMainUncutMean[2:4], sdlog = sqrt((diag(VBMainUncutVCov))[2:4]))
+  upper.VB.uncut[seed.num,5] <- quantile(tau.post.draws,0.975)
+  cat("Completed seed number:", seed.num, "\n")
+  
+}
+Bias.VB.uncut <- rowMeans(apply(theta.VB.uncut,1,function(s){ s- true.val }))
+RMSE.VB.uncut <- sqrt(colMeans(t(apply(theta.VB.uncut,1,function(s){ (s - true.val)^2 })) ))
+Coverage.VB.uncut <- rowMeans(apply(lower.VB.uncut,1,function(s){ s <= true.val })*apply(upper.VB.uncut,1,function(s){ s >= true.val }))
+KL.marginal1.VB.uncut <- 0.5*log(1) - 0.5*log(theta.VB.uncut[,2]) + 0.5*(theta.VB.uncut[,2]/1) + 0.5*(theta.VB.uncut[,1]-1)^2 - 0.5
+KL.marginal2.VB.uncut <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.VB.uncut[rs] <- KL.GAMMA(shape1 = theta.VB.uncut[rs,3], rate1 = theta.VB.uncut[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.VB.uncut[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.VB.uncut
+RMSE.VB.uncut
+Coverage.VB.uncut
+c(mean(KL.marginal1.VB.uncut),mean(KL.marginal2.VB.uncut),mean(KS.cop.vec))
+```
+
+#VB cut I posterior inference with correctly specified marginals and misspecified copula
+```{r}
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 1)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <-univariateML::mlgamma(y2)
+  omega.guess <- max(logit(2/pi*asin(cor(y1,y2))),0.05)
+  VBobj.marginal1.cut1 <- VB.Marginal.LogNormal.cut1(y = y1, m.init = c( mean(log(y1)), log(var(log(y1))) ), C.init = diag(0.1,2))
+  VBobj.marginal2.cut1 <- VB.Marginal.Gamma.cut1(y = y2, m.init = c(MLE[1],MLE[2]), C.init = diag(0.1,2))
+  VBMainCutMean <- c(colMeans(VBobj.marginal1.cut1$mstore[5001:10000,]),colMeans(VBobj.marginal2.cut1$mstore[5001:10000,]),omega.guess)
+  VBMainCutCov <- matrix(0,nrow=5,ncol=5)
+  for(b in 5001:10000){
+    
+    VBMainCutCov[1:2,1:2] <- VBMainCutCov[1:2,1:2] + VBobj.marginal1.cut1$Cstore[,,b] %*% t(VBobj.marginal1.cut1$Cstore[,,b])
+    VBMainCutCov[3:4,3:4] <- VBMainCutCov[3:4,3:4] + VBobj.marginal2.cut1$Cstore[,,b] %*% t(VBobj.marginal2.cut1$Cstore[,,b])
+    
+  }
+  VBMainCutCov <- VBMainCutCov/5000
+  VBMainCutCov[1:4,1:4] <- t(chol(VBMainCutCov[1:4,1:4]))
+  VBMainCutCov[5,5] <- 0.1
+  VBobj.cop.cut1 <- VB.LogNormal.Gamma.Gumbel.cut1(y = cbind(y1, y2), m.init = VBMainCutMean, C.init = VBMainCutCov)
+  VBMainCutCov <- matrix(0,nrow=5,ncol=5)
+  for(b in 5001:10000){
+    
+    VBMainCutCov <- VBMainCutCov + VBobj.cop.cut1$Cstore[,,b] %*% t(VBobj.cop.cut1$Cstore[,,b])
+    
+  }
+  VBMainCutCov <- VBMainCutCov/5000
+  VBMainCutMean <- colMeans(VBobj.cop.cut1$mstore[5001:10000,])
+  theta.VB.cut1[seed.num,1] <- VBMainCutMean[1]
+  theta.VB.cut1[seed.num,2:4] <- exp(VBMainCutMean[2:4] + 0.5*(diag(VBMainCutCov))[2:4])
+  omega.post.draws <- rnorm(100000,mean=VBMainCutMean[5],sd=sqrt(VBMainCutCov[5,5]))
+  tau.post.draws <- exp(log(exp(exp(omega.post.draws)) - 1) - log(exp(exp(omega.post.draws)) + 1))
+  theta.VB.cut1[seed.num,5] <- mean(tau.post.draws)
+  theta.var.VB.cut1[seed.num,1] <- (diag(VBMainCutCov))[1]
+  theta.var.VB.cut1[seed.num,2:4] <- (exp((diag(VBMainCutCov))[2:4])-1)*exp(2* VBMainCutMean[2:4] + (diag(VBMainCutCov))[2:4])
+  theta.var.VB.cut1[seed.num,5] <- var(tau.post.draws)
+  lower.VB.cut1[seed.num,1] <- qnorm(0.025,mean = VBMainCutMean[1], sd = sqrt((diag(VBMainCutCov))[1]) )
+  lower.VB.cut1[seed.num,2:4] <- qlnorm(0.025,meanlog = VBMainCutMean[2:4], sdlog = sqrt((diag(VBMainCutCov))[2:4]))
+  lower.VB.cut1[seed.num,5] <- quantile(tau.post.draws,0.025)
+  upper.VB.cut1[seed.num,1] <- qnorm(0.975,mean = VBMainCutMean[1], sd = sqrt((diag(VBMainCutCov))[1]) )
+  upper.VB.cut1[seed.num,2:4] <- qlnorm(0.975,meanlog = VBMainCutMean[2:4], sdlog = sqrt((diag(VBMainCutCov))[2:4]))
+  upper.VB.cut1[seed.num,5] <- quantile(tau.post.draws,0.975)
+  cat("Completed seed number:", seed.num, "\n")
+
+  
+}
+Bias.VB.cut1 <- rowMeans(apply(theta.VB.cut1,1,function(s){ s- true.val }))
+RMSE.VB.cut1 <- sqrt(colMeans(t(apply(theta.VB.cut1,1,function(s){ (s - true.val)^2 })) ))
+Coverage.VB.cut1 <- rowMeans(apply(lower.VB.cut1,1,function(s){ s <= true.val })*apply(upper.VB.cut1,1,function(s){ s >= true.val }))
+KL.marginal1.VB.cut1 <- 0.5*log(1) - 0.5*log(theta.VB.cut1[,2]) + 0.5*(theta.VB.cut1[,2]/1) + 0.5*(theta.VB.cut1[,1]-1)^2 - 0.5
+KL.marginal2.VB.cut1 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.VB.cut1[rs] <- KL.GAMMA(shape1 = theta.VB.cut1[rs,3], rate1 = theta.VB.cut1[rs,4], shape2 = true.val[3], rate2 = true.val[4])
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.VB.cut1[rs,5])
+    a2 <- LogPDFTCop(F1 = u1, F2 = u2, tau = true.val[5])
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+}
+Bias.VB.cut1
+RMSE.VB.cut1
+Coverage.VB.cut1
+c(mean(KL.marginal1.VB.cut1),mean(KL.marginal2.VB.cut1),mean(KS.cop.vec))
+```
+
+
