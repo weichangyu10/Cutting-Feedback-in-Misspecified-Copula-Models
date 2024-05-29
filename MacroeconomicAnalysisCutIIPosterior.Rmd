@@ -154,9 +154,9 @@ ReverseVBCopObj <- NewCopulaVBReverseCutRversion(AMAT = Amat.rank, BMAT = Bmat.r
 Compute Cut II posterior of marginal parameters (based on entire dataset)
 ```{r}
 muInit.marginal <- rep(0,91)
-muInit.marginal[1:75] <- ReverseVBCopObj$MuStore[10,1:75]
+muInit.marginal[1:75] <- ReverseVBCopObj$MuStore[1000,1:75]
 CInit.marginal <- diag(0.1,91)
-CInit.marginal[1:75,1:75] <- ReverseVBCopObj$CStore[,,10]
+CInit.marginal[1:75,1:75] <- ReverseVBCopObj$CStore[,,1000]
 ReverseVBMargObj <- NewCopulaVBReverseCutMarginalPar(y1 = y1, y2=y2, y3=y3, y4=y4, maxRuns = 10000, mu.init = muInit.marginal, C.init = CInit.marginal)
 ParDraws <- rmvnorm(50000,mean = ReverseVBMargObj$muMAT[10000,], sigma = (ReverseVBMargObj$CArray[,,10000] %*% t(ReverseVBMargObj$CArray[,,10000]) ) )
 ParDraws <- ParDraws[,c(76:91,1:75)]
@@ -167,11 +167,37 @@ Compute 4-step forward log-score metric
 MarginalDrawsKernelEst <- matrix(0,nrow=32,ncol=183)
 for(tprime in 84:266){
   
+  y1.temp <- y1[1:tprime]
+  y2.temp <- y2[1:tprime]
+  y3.temp <- y3[1:tprime]
+  y4.temp <- y4[1:tprime]
+  a1.temp <- (rank(y1.temp)-1)/(length(y1.temp)+1)
+  a2.temp <- (rank(y2.temp)-1)/(length(y2.temp)+1)
+  a3.temp <- (rank(y3.temp)-1)/(length(y3.temp)+1)
+  a4.temp <- (rank(y4.temp)-1)/(length(y4.temp)+1)
+  b1.temp <- rank(y1.temp)/(length(y1.temp)+1)
+  b2.temp <- rank(y2.temp)/(length(y2.temp)+1)
+  b3.temp <- rank(y3.temp)/(length(y3.temp)+1)
+  b4.temp <- rank(y4.temp)/(length(y4.temp)+1)
+  Amat.rank.temp <- cbind(a1.temp,a2.temp,a3.temp,a4.temp)
+  Bmat.rank.temp <- cbind(b1.temp,b2.temp,b3.temp,b4.temp)
+  etaMatTry <- matrix(rt(length(y1.temp)*4,df=3),nrow=length(y1.temp),ncol=4)
+  wMatTry <- log(matrix(1/rgamma(length(y1.temp)*4,shape=2,rate=4),nrow=length(y1.temp),ncol=4))
+  ReverseVBCopObj.temp <- NewCopulaVBReverseCutRversion(AMAT = Amat.rank.temp, BMAT = Bmat.rank.temp, muInit = VB.uncut.obj$muMAT[10000,], CInit = VB.uncut.obj$CArray[,,10000], EtaMatInit = etaMatTry, WMatInit = wMatTry, maxRuns = 1000)
+  muInit.marginal <- rep(0,91)
+  muInit.marginal[1:75] <- ReverseVBCopObj.temp$MuStore[1000,1:75]
+  CInit.marginal <- diag(0.1,91)
+  CInit.marginal[1:75,1:75] <- ReverseVBCopObj.temp$CStore[,,1000]
+  ReverseVBMargObj.temp <- NewCopulaVBReverseCutMarginalPar(y1 = y1.temp, y2=y2.temp, y3=y3.temp, y4=y4.temp, maxRuns = 10000, mu.init = muInit.marginal, C.init = CInit.marginal)
+  ParDraws <- rmvnorm(50000,mean = ReverseVBMargObj$muMAT[10000,], sigma = (ReverseVBMargObj$CArray[,,10000] %*% t(ReverseVBMargObj$CArray[,,10000]) ) )
+  ParDraws <- ParDraws[,c(76:91,1:75)]
+  
+  
   u1.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
   u2.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
   u3.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
   u4.draw.MAT <- matrix(0,nrow=(tprime+8),ncol=5000)
-  ParDraws.temp <- rmvnorm(5000,mean = ReverseVBMargObj$muMAT[10000,], sigma = (ReverseVBMargObj$CArray[,,10000] %*% t(ReverseVBMargObj$CArray[,,10000]) ) )
+  ParDraws.temp <- rmvnorm(5000,mean = ReverseVBMargObj.temp[10000,], sigma = (ReverseVBMargObj.temp$CArray[,,10000] %*% t(ReverseVBMargObj.temp$CArray[,,10000]) ) )
   ParDraws.temp <- ParDraws.temp[,c(76:91,1:75)]
   Whistory.All.MAT <- matrix(0,nrow=5000,ncol=(4*(tprime+8)))
   for(l in 1:5000){
