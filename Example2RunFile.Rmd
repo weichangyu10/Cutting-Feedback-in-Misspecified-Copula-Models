@@ -1,0 +1,337 @@
+---
+title: "Example2RunFile"
+author: "CutPosteriorAuthors"
+date: "2024-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load required packages
+```{r}
+library(copula)
+library(doParallel)
+library(pracma)
+library(extraDistr)
+library(mvtnorm)
+library(numDeriv)
+library(pracma)
+library(mvtnorm)
+library(numDeriv)
+```
+
+#Load customised functions
+```{r}
+source("NewMCMCcodesExample2Revised.R")
+source("NewVBcodesExample2Revised.R")
+```
+
+#Select training sample size
+```{r}
+N <- 1000
+#N <- 500
+#N <- 100
+```
+
+#Set true copula density
+```{r}
+d <- 2
+tau.true <- 0.7
+cc <- tCopula(param = sin(0.5*pi*tau.true) ,dim = d, df=1)
+```
+
+#Set number of cores
+```{r}
+cores=detectCores() - 1
+```
+
+#MCMC inference with correctly specified marginals and copula 
+```{r}
+theta.correct <- matrix(0,nrow=500,ncol=5)
+theta.var.correct <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- c(mean(y1),var(log(y1)),mean(y2),var(log(y2)))
+  MCMCobj.uncut <- NewMCMCfull.LogNormal.Gamma.Gumbel(y = cbind(y1,y2), mu.init = 1, v.init = log(0.5^2), a.init = log(7), b.init = log(3), omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000)
+  theta.correct[seed.num,] <- c(mean(MCMCobj.uncut$mu.vec[5001:15000]), mean(exp(MCMCobj.uncut$v.vec[5001:15000])), mean(exp(MCMCobj.uncut$a.vec[5001:15000])), mean(exp(MCMCobj.uncut$b.vec[5001:15000])), mean(MCMCobj.uncut$tau.vec[5001:15000]))
+  theta.var.correct[seed.num,] <- c(var(MCMCobj.uncut$mu.vec[5001:15000]),var(exp(MCMCobj.uncut$v.vec[5001:15000])), var(exp(MCMCobj.uncut$a.vec[5001:15000])), var(exp(MCMCobj.uncut$b.vec[5001:15000])), var(MCMCobj.uncut$tau.vec[5001:15000]))
+
+}
+KL.marginal1.correct.2 <- 0.5*log(0.5^2) - 0.5*log(theta.correct[,2]) + 0.5*(theta.correct[,2]/0.25) + 0.5*(theta.correct[,1]-1)^2 - 0.5
+KL.marginal2.correct.2 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.correct.2[rs] <- KL.GAMMA(shape1 = theta.correct[rs,3], rate1 = theta.correct[rs,4], shape2 = 7, rate2 = 3)
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.correct[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.correct.2), mean(KL.marginal2.correct.2), mean(KS.cop.vec))
+```
+
+#MCMC inference with misspecified marginals and correctly-specified copula
+```{r}
+theta.uncut <- matrix(0,nrow=500,ncol=5)
+theta.var.uncut <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- c(mean(y1),var(log(y1)),mean(y2),var(log(y2)))
+  MCMCobj.uncut <- NewMCMCfull.Normal.Normal.Gumbel(y = cbind(y1,y2), mu1.init = MLE[1], v1.init = MLE[2], mu2.init = MLE[3], v2.init = MLE[4], omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000)
+  theta.uncut[seed.num,] <- c(mean(MCMCobj.uncut$mu1.vec[5001:15000]), mean(exp(MCMCobj.uncut$v1.vec[5001:15000])), mean(MCMCobj.uncut$mu2.vec[5001:15000]), mean(exp(MCMCobj.uncut$v2.vec[5001:15000])), mean(MCMCobj.uncut$tau.vec[5001:15000]))
+  theta.var.uncut[seed.num,] <- c(var(MCMCobj.uncut$mu1.vec[5001:15000]),var(exp(MCMCobj.uncut$v1.vec[5001:15000])), var(MCMCobj.uncut$mu2.vec[5001:15000]), var(exp(MCMCobj.uncut$v2.vec[5001:15000])), var(MCMCobj.uncut$tau.vec[5001:15000]))
+  
+}
+KL.marginal1.uncut <- rep(0,500)
+KL.marginal2.uncut <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal1.uncut[rs] <- KLPosNormalLogN(Pos.m1 = theta.uncut[rs,1], Pos.var1 = theta.uncut[rs,2], LogN.m2 = 1, LogN.v2 = (0.5^2) )
+  KL.marginal2.uncut[rs] <- KLPosNormalGamma(Pos.m1 = theta.uncut[rs,3], Pos.var1 = theta.uncut[rs,4], Gamma.A = 7, Gamma.B = 3 )
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.uncut[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.uncut), mean(KL.marginal2.uncut), mean(KS.cop.vec))
+```
+
+#MCMC Cut II posterior inference with misspecified marginals and correctly-specified copula
+```{r}
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- c(mean(y1),var(log(y1)),mean(y2),var(log(y2)))
+  MCMCobj.cut.cop <- NewMCMCcut.Gumbelcop(y = cbind(y1,y2), omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000)
+  
+  cl <- makeCluster(cores[1]-1)
+  registerDoParallel(cl)
+  finalMatrix <- foreach(l=1:10000, .combine=rbind, .packages = c("copula", "mvtnorm", "pracma")) %dopar% {
+    
+    MCMCobj.cut.marginal <- NewMCMCcut.Normal.Normal.Gumbel(y = cbind(y1,y2), mu1.init = MLE[1], v1.init = MLE[2], mu2.init = MLE[3], v2.init = MLE[4], tau.input = MCMCobj.cut.cop$tau.vec[5000+l], B = 2000)
+    c(MCMCobj.cut.marginal$mu1.vec[2000], exp(MCMCobj.cut.marginal$v1.vec[2000]), MCMCobj.cut.marginal$mu2.vec[2000], exp(MCMCobj.cut.marginal$v2.vec[2000]) )
+    
+  }
+  stopCluster(cl)
+  theta.cut2[seed.num,] <- c(colMeans(finalMatrix), mean(MCMCobj.cut.cop$tau.vec[5001:15000]))
+  theta.var.cut2[seed.num,] <- c(apply(finalMatrix,2,var), var(MCMCobj.cut.cop$tau.vec[5001:15000]))
+  
+  if((seed.num%%10)==0){
+    
+    cat("Completed seed num:", seed.num, "\n")
+    
+  }
+  
+}
+KL.marginal1.cut2 <- rep(0,500)
+KL.marginal2.cut2 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal1.cut2[rs] <- KLPosNormalLogN(Pos.m1 = theta.cut2[rs,1], Pos.var1 = theta.cut2[rs,2], LogN.m2 = 1, LogN.v2 = (0.5^2) )
+  KL.marginal2.cut2[rs] <- KLPosNormalGamma(Pos.m1 = theta.cut2[rs,3], Pos.var1 = theta.cut2[rs,4], Gamma.A = 7, Gamma.B = 3 )
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.cut2[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.cut2), mean(KL.marginal2.cut2), mean(KS.cop.vec))
+```
+
+#MCMC Cut II posterior inference with correctly-specified marginals and copula
+```{r}
+theta.correct.cut2 <- matrix(0,nrow=500,ncol=5)
+theta.var.correct.cut2 <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- univariateML::mlgamma(y2)
+  MCMCobj.cut.cop <- NewMCMCcut.Gumbelcop(y = cbind(y1,y2), omega.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), B = 15000)
+  
+  cl <- makeCluster(cores[1]-1)
+  registerDoParallel(cl)
+  finalMatrix <- foreach(l=1:10000, .combine=rbind, .packages = c("copula", "mvtnorm", "pracma")) %dopar% {
+    
+    MCMCobj.cut.marginal <- NewMCMCcut.LogNormal.Gamma.Gumbel(y = cbind(y1,y2), mu.init = mean(y1), v.init = log(var(y1)), a.init = log(MLE[1]), b.init = log(MLE[2]), tau.input = MCMCobj.cut.cop$tau.vec[5000+l], B = 2000)
+    c(MCMCobj.cut.marginal$mu.vec[2000], exp(MCMCobj.cut.marginal$v.vec[2000]), exp(MCMCobj.cut.marginal$a.vec[2000]), exp(MCMCobj.cut.marginal$b.vec[2000]) )
+    
+  }
+  stopCluster(cl)
+  theta.correct.cut2[seed.num,] <- c(colMeans(finalMatrix), mean(MCMCobj.cut.cop$tau.vec[5001:15000]))
+  theta.var.correct.cut2[seed.num,] <- c(apply(finalMatrix,2,var), var(MCMCobj.cut.cop$tau.vec[5001:15000]))
+  
+  if((seed.num%%10)==0){
+    
+    cat("Completed seed num:", seed.num, "\n")
+    
+  }
+  
+}
+KL.marginal1.cut.correct.2 <- 0.5*log(0.5^2) - 0.5*log(theta.correct.cut2[,2]) + 0.5*(theta.correct.cut2[,2]/0.25) + 0.5*(theta.correct.cut2[,1]-1)^2 - 0.5
+KL.marginal2.cut.correct.2 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal2.cut.correct.2[rs] <- KL.GAMMA(shape1 = theta.correct.cut2[rs,3], rate1 = theta.correct.cut2[rs,4], shape2 = 7, rate2 = 3)
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.correct.cut2[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.cut.correct.2), mean(KL.marginal2.cut.correct.2), mean(KS.cop.vec))
+```
+
+#VB inference with misspecified marginals and correctly-specified copula
+```{r}
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- c(mean(y1),var(log(y1)),mean(y2),var(log(y2)))
+  VBobj.uncut <- NewVBuncut.PosNormal.PosNormal.Gumbel(y1 = y1, y2 = y2, mu.init = c(MLE[1],log(MLE[2]),MLE[3],log(MLE[4]),max(logit(2/pi*asin(cor(y1,y2))),0.05)), C.init = diag(0.1,5), maxRuns = 10000)
+  temp.mean.uncut <- colMeans(VBobj.uncut$mustore[8001:10000,])
+  temp.cov.uncut <- matrix(0,nrow=5,ncol=5)
+  for(b in 8001:10000){
+    
+    temp.cov.uncut <- temp.cov.uncut + VBobj.uncut$Cstore[,,b] %*% t( VBobj.uncut$Cstore[,,b] )
+    
+  }
+  temp.cov.uncut <- temp.cov.uncut/2000
+  tau.draws.temp <- rnorm(n = 50000, mean = temp.mean.uncut[5], sd = sqrt(temp.cov.uncut[5,5]))
+  tau.draws.temp <- exp(log(exp(exp(tau.draws.temp)) - 1) - log(exp(exp(tau.draws.temp)) + 1))
+  theta.VB.uncut[seed.num,] <- c( temp.mean.uncut[1], exp(temp.mean.uncut[2]+ 0.5*temp.cov.uncut[2,2]),  temp.mean.uncut[3], exp(temp.mean.uncut[4]+ 0.5*temp.cov.uncut[4,4]), mean(tau.draws.temp) )
+  
+  
+}
+KL.marginal1.VB.uncut <- rep(0,500)
+KL.marginal2.VB.uncut <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal1.VB.uncut[rs] <- KLPosNormalLogN(Pos.m1 = theta.VB.uncut[rs,1], Pos.var1 = theta.VB.uncut[rs,2], LogN.m2 = 1, LogN.v2 = (0.5^2) )
+  KL.marginal2.VB.uncut[rs] <- KLPosNormalGamma(Pos.m1 = theta.VB.uncut[rs,3], Pos.var1 = theta.VB.uncut[rs,4], Gamma.A = 7, Gamma.B = 3 )
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.VB.uncut[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.VB.uncut), mean(KL.marginal2.VB.uncut), mean(KS.cop.vec))
+```
+
+#VB cut II posterior inference with misspecified marginals and correctly-specified copula
+```{r}
+theta.VB.cut2 <- matrix(0,nrow=500,ncol=5)
+theta.var.VB.cut2 <- matrix(0,nrow=500,ncol=5)
+for(seed.num in 1:500){
+  
+  set.seed(seed.num)
+  U <- rCopula(N, copula = cc)
+  y1 <- qlnorm(U[,1], meanlog = 1, sdlog = 0.5)
+  y2 <- qgamma(U[,2], shape=7, rate = 3)
+  MLE <- c(mean(y1),var(log(y1)),mean(y2),var(log(y2)))
+  VBobj.cop.cut <- NewVBcut.Gumbel(y1 = y1, y2 = y2, mu.init = max(logit(2/pi*asin(cor(y1,y2))),0.05), c.init = 0.1, maxRuns = 10000)
+  VBobj.marginal.cut <- NewVBcut.PosNormal.PosNormal.Gumbel(y1 = y1, y2 = y2, mu.init = c(MLE[1],log(MLE[2]),MLE[3],log(MLE[4]), mean(VBobj.cop.cut$mustore[8001:10000])), maxRuns = 10000)
+  CutCov.temp <- matrix(0,nrow=4,ncol=4)
+  for(b in 8001:10000){
+    
+    CutCov.temp <- CutCov.temp + VBobj.marginal.cut$Cstore[,,b] %*% t( VBobj.marginal.cut$Cstore[,,b] )
+    
+  }
+  CutCov.temp <- CutCov.temp/2000
+  CutMean.temp <- colMeans(VBobj.marginal.cut$mustore[8001:10000,])
+  theta.VB.cut2[seed.num,1:4] <- c(CutMean.temp[1], exp(CutMean.temp[2]+0.5*CutCov.temp[2,2]), CutMean.temp[3], exp(CutMean.temp[4]+0.5*CutCov.temp[4,4]) )
+  omega.draws.temp <- rnorm(n=100000, mean= mean(VBobj.cop.cut$mustore[8001:10000]), sd= sqrt(mean(VBobj.cop.cut$Cstore[8001:10000]^2)) )
+  theta.VB.cut2[seed.num,5] <- mean(exp(log(exp(exp(omega.draws.temp)) - 1) - log(exp(exp(omega.draws.temp)) + 1)))
+  
+  
+}
+KL.marginal1.VB.cut2 <- rep(0,500)
+KL.marginal2.VB.cut2 <- rep(0,500)
+KS.cop.vec <- rep(0,500)
+u1.values <- seq(0.01,0.99,0.01)
+u2.values <- u1.values
+for(rs in 1:500){
+  
+  KL.marginal1.VB.cut2[rs] <- KLPosNormalLogN(Pos.m1 = theta.VB.cut2[rs,1], Pos.var1 = theta.VB.cut2[rs,2], LogN.m2 = 1, LogN.v2 = (0.5^2) )
+  KL.marginal2.VB.cut2[rs] <- KLPosNormalGamma(Pos.m1 = theta.VB.cut2[rs,3], Pos.var1 = theta.VB.cut2[rs,4], Gamma.A = 7, Gamma.B = 3 )
+  KLGumbelCop <- function(u1, u2){
+    
+    a1 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = theta.VB.cut2[rs,5])
+    a2 <- LogPDFGumbelCop(F1 = u1, F2 = u2, tau = tau.true)
+    return(exp(a1)*(a1-a2))
+    
+  }
+  grid.temp <- outer(u1.values,u2.values, FUN=KLGumbelCop)
+  KS.cop.vec[rs] <- max(0,0.25*0.01^2*(sum(grid.temp[1:98,1:98]) + sum(grid.temp[1:98,2:99]) + sum(grid.temp[2:99,1:98]) + sum(grid.temp[2:99,2:99])))
+  
+  
+}
+c(mean(KL.marginal1.VB.cut2),mean(KL.marginal2.VB.cut2),mean(KS.cop.vec))
+```
+
+
